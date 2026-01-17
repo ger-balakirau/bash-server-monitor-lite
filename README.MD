@@ -59,6 +59,7 @@
 ## Структура проекта
 
 ```text
+├── install.sh        # Установка в /opt + systemd/cron
 ├── bootstrap.sh      # Установка необходимых утилит/зависимостей
 ├── monitor.sh        # Мониторинг (CPU, RAM, Disk, HTTP, Docker) + Telegram алерты
 ├── .env.example      # Пример конфигурации
@@ -72,6 +73,31 @@
 ---
 
 ## Быстрый старт
+
+### Варианты установки
+
+1) Самый простой: один файл
+```bash
+scp monitor.sh user@server:/opt/monitor/
+```
+
+2) С `.env` рядом со скриптом
+```bash
+scp monitor.sh .env user@server:/opt/monitor/
+```
+
+3) Через `install.sh` (рекомендуется)
+```bash
+./install.sh
+```
+Скрипт:
+- запускает `bootstrap.sh`;
+- копирует `monitor.sh` и `.env.example` в `/opt/monitor` (создаёт `/opt/monitor/.env`, если его нет);
+- если есть systemd — создаёт `monitor-lite.service` и `monitor-lite.timer`;
+- если systemd нет — ставит cron в `/etc/cron.d/monitor-lite`.
+Если нет ни systemd, ни cron — создаётся `run.sh` в `/opt/monitor`, его нужно запускать вручную (цикл с паузой 60 сек).
+
+Примечание: если у вас строгая политика прав, можно заменить `chmod +x` на `chmod u+x` в `install.sh`.
 
 ### 1) Создать Telegram-бота и получить токен
 
@@ -600,6 +626,21 @@ make test
 
 ```bash
 make lint
+```
+
+Для запуска команд через Makefile нужен установленный `make`.
+
+Установка `make`:
+
+```bash
+# Debian/Ubuntu
+sudo apt-get update -y && sudo apt-get install -y make
+
+# RHEL/CentOS/Rocky/Alma
+sudo dnf install -y make
+
+# Arch
+sudo pacman -Sy --noconfirm make
 ```
 
 ---
