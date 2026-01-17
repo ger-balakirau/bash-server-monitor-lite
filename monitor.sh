@@ -216,6 +216,7 @@ fi
 : "${HTTP_OK_MAX:=399}"   # 2xx + 3xx (редиректы НЕ ошибка)
 
 : "${CPU_WARN:=90}"
+: "${CPU_FULL_THRESHOLD:=1}"
 : "${MEM_WARN:=90}"
 : "${DISK_WARN:=80}"
 : "${SWAP_WARN:=60}"
@@ -345,7 +346,7 @@ init_state() {
     jq -n '{
       http: { down: false, targets: {}, urls: [] },
       host: {
-        cpu:  { alert: false, last: 0 },
+        cpu:  { alert: false, last: 0, full_count: 0 },
         ram:  { alert: false, last: 0 },
         disk: { alert: false, last: 0 },
         swap: { alert: false, last: 0 }
@@ -392,7 +393,7 @@ cpu_usage_pct() {
   total1=$((user + nice + system + idle + iowait + irq + softirq + steal))
   idle1=$((idle + iowait))
 
-  sleep 0.2
+  sleep 0.5
 
   read -r _ user nice system idle iowait irq softirq steal _ < /proc/stat
   total2=$((user + nice + system + idle + iowait + irq + softirq + steal))
@@ -697,7 +698,28 @@ host_check() {
   DISK="$(disk_usage_pct)"
   SWAP="$(swap_usage_pct)"
 
-  check_metric "$NAME_CPU"   "$CPU"  "$CPU_WARN"  "$((CPU_WARN-10))"   ".host.cpu"
+  local cpu_alert cpu_full_count
+  state_apply '.host.cpu.full_count //= 0'
+  cpu_alert="$(state_get ".host.cpu.alert")"; cpu_alert="${cpu_alert:-false}"
+  cpu_full_count="$(state_get ".host.cpu.full_count")"; cpu_full_count="${cpu_full_count:-0}"
+
+  if (( CPU == 100 )); then
+    if [[ "$cpu_alert" == "false" ]]; then
+      cpu_full_count=$((cpu_full_count + 1))
+      state_apply ".host.cpu.full_count = \$count" --argjson count "$cpu_full_count"
+      if (( cpu_full_count >= CPU_FULL_THRESHOLD )); then
+        check_metric "$NAME_CPU" "$CPU" "$CPU_WARN" "$((CPU_WARN-10))" ".host.cpu"
+      fi
+    else
+      check_metric "$NAME_CPU" "$CPU" "$CPU_WARN" "$((CPU_WARN-10))" ".host.cpu"
+    fi
+  else
+    if (( cpu_full_count != 0 )); then
+      state_apply ".host.cpu.full_count = 0"
+    fi
+    check_metric "$NAME_CPU" "$CPU" "$CPU_WARN" "$((CPU_WARN-10))" ".host.cpu"
+  fi
+
   check_metric "$NAME_RAM"   "$RAM"  "$MEM_WARN"  "$((MEM_WARN-10))"   ".host.ram"
   check_metric "$NAME_DISK"  "$DISK" "$DISK_WARN" "$((DISK_WARN-5))"   ".host.disk"
   check_metric "$NAME_SWAP"  "$SWAP" "$SWAP_WARN" "$((SWAP_WARN-10))"  ".host.swap"

@@ -288,6 +288,7 @@ HTTP_OK_MAX=399
 # Host thresholds (проценты)
 # ============================================================
 CPU_WARN=90
+CPU_FULL_THRESHOLD=1
 MEM_WARN=90
 DISK_WARN=80
 SWAP_WARN=60
@@ -382,6 +383,7 @@ CONTAINERS="nginx, mysql, redis"
 Пороги задаются в процентах:
 
 - `CPU_WARN` — алерт при высокой загрузке CPU
+- `CPU_FULL_THRESHOLD` — сколько запусков подряд допускается 100% CPU до алерта (работает только для значения 100%)
 - `MEM_WARN` — алерт при высокой загрузке RAM (используется `MemAvailable`)
 - `DISK_WARN` — алерт при заполнении корневой FS (`/`)
 - `SWAP_WARN` — алерт по swap
