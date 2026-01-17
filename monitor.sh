@@ -48,10 +48,10 @@ fi
 : "${TG_TOKEN:=""}"  # однофайловый режим: впишите токен сюда при необходимости
 : "${TG_CHAT:=""}"   # однофайловый режим: впишите chat id сюда при необходимости
 
-: "${MSG_HTTP_DOWN_SERVICE_UP:="❌ Сайт недоступен. HTTP {CODE}. Ошибка {FAILS}-й раз подряд. Служба {WEB} работает."}"
-: "${MSG_HTTP_DOWN_SERVICE_DOWN:="❌ Сайт недоступен. HTTP {CODE}. Ошибка {FAILS}-й раз подряд. Служба {WEB} не работает."}"
-: "${MSG_HTTP_DOWN_NO_SERVICE:="❌ Сайт недоступен. HTTP {CODE}. Ошибка {FAILS}-й раз подряд. Веб-сервис на сервере не обнаружен."}"
-: "${MSG_HTTP_RECOVERED:="✅ Сайт восстановился. Код: {CODE}. Время ответа: {TIME} сек"}"
+: "${MSG_HTTP_DOWN_SERVICE_UP:="❌ Сайт недоступен: {URL}. HTTP {CODE}. Ошибка {FAILS}-й раз подряд. Служба {WEB} работает."}"
+: "${MSG_HTTP_DOWN_SERVICE_DOWN:="❌ Сайт недоступен: {URL}. HTTP {CODE}. Ошибка {FAILS}-й раз подряд. Служба {WEB} не работает."}"
+: "${MSG_HTTP_DOWN_NO_SERVICE:="❌ Сайт недоступен: {URL}. HTTP {CODE}. Ошибка {FAILS}-й раз подряд. Веб-сервис на сервере не обнаружен."}"
+: "${MSG_HTTP_RECOVERED:="✅ Сайт восстановился: {URL}. Код: {CODE}. Время ответа: {TIME} сек"}"
 : "${MSG_METRIC_ALERT:="⚠️ {NAME}: {VALUE}% (порог {WARN}%)"}"
 : "${MSG_METRIC_RECOVERED:="✅ {NAME} нормализовался: {VALUE}%"}"
 : "${MSG_CONTAINER_DOWN:="❌ Контейнер {CT} остановлен"}"
@@ -73,27 +73,27 @@ fi
 : "${LOG_FATAL_ON_ERROR:="{HOST}:{SCRIPT}:{LINE} cmd='{CMD}' exit={EXIT}"}"
 
 : "${WARN_TG_NOT_CONFIGURED:="WARN: Telegram is not configured (TG_TOKEN/TG_CHAT are empty)"}"
-: "${WARN_URL_MISSING_HTTP_ENABLED:="WARN: ENABLE_HTTP_MONITOR=1 but URL is not set"}"
-: "${WARN_URL_AND_NO_WEB:="WARN: URL is not set and no web service detected"}"
+: "${WARN_URL_MISSING_HTTP_ENABLED:="WARN: ENABLE_HTTP_MONITOR=1 but URLS is not set"}"
+: "${WARN_URL_AND_NO_WEB:="WARN: URLS is not set and no web service detected"}"
 
 : "${LOG_TG_NOT_CONFIGURED:="Telegram is not configured (TG_TOKEN/TG_CHAT are empty)"}"
-: "${LOG_HTTP_FAIL:="HTTP check failed: code={CODE}, fails={FAILS}, threshold={THRESHOLD}"}"
-: "${LOG_URL_DOWN_SERVICE_UP:="URL down but service {WEB} is running"}"
-: "${LOG_URL_DOWN_SERVICE_DOWN:="URL down and service {WEB} is not running"}"
-: "${LOG_URL_DOWN_NO_SERVICE:="URL down and no web service detected"}"
+: "${LOG_HTTP_FAIL:="HTTP check failed for {URL}: code={CODE}, fails={FAILS}, threshold={THRESHOLD}"}"
+: "${LOG_URL_DOWN_SERVICE_UP:="URL down for {URL}, service {WEB} is running"}"
+: "${LOG_URL_DOWN_SERVICE_DOWN:="URL down for {URL}, service {WEB} is not running"}"
+: "${LOG_URL_DOWN_NO_SERVICE:="URL down for {URL}, no web service detected"}"
 : "${LOG_METRIC_ALERT:="{NAME} alert: {VALUE}%"}"
 : "${LOG_CONTAINER_STOPPED:="Container {CT} stopped"}"
-: "${LOG_SERVICE_RECOVER_HTTP_DOWN:="Service {WEB} recovered but HTTP is still down"}"
+: "${LOG_SERVICE_RECOVER_HTTP_DOWN:="Service {WEB} recovered but HTTP is still down for {URLS}"}"
 : "${LOG_ROTATED:="Log rotated (kept last {LINES} lines)"}"
 : "${LOG_STATE_CREATED:="State file created"}"
 : "${LOG_TG_SEND_FAILED:="Failed to send Telegram message"}"
-: "${LOG_HTTP_DOWN_CONFIRMED:="HTTP DOWN confirmed (code={CODE})"}"
-: "${LOG_HTTP_RECOVERED:="HTTP recovered, time={TIME}s, code={CODE}"}"
+: "${LOG_HTTP_DOWN_CONFIRMED:="HTTP DOWN confirmed for {URL} (code={CODE})"}"
+: "${LOG_HTTP_RECOVERED:="HTTP recovered for {URL}, time={TIME}s, code={CODE}"}"
 : "${LOG_METRIC_RECOVERED:="{NAME} recovered: {VALUE}%"}"
 : "${LOG_CONTAINER_STARTED:="Container {CT} started"}"
 : "${LOG_MONITOR_STARTED:="Monitor run started"}"
 : "${LOG_MONITOR_FINISHED:="Monitor run finished"}"
-: "${LOG_HTTP_AND_SERVICE_DOWN:="HTTP already down and service {WEB} is now stopped"}"
+: "${LOG_HTTP_AND_SERVICE_DOWN:="HTTP already down for {URLS} and service {WEB} is now stopped"}"
 : "${LOG_ANOTHER_INSTANCE:="Another instance is running, exiting"}"
 
 : "${STATE_FILE:=$HOME/.local/state/monitor/state.json}"
@@ -103,6 +103,8 @@ fi
 : "${ENABLE_HTTP_MONITOR:=0}"
 : "${ENABLE_HOST_MONITOR:=1}"
 : "${ENABLE_DOCKER_MONITOR:=0}"
+
+: "${URLS:=""}"
 
 : "${HTTP_TIMEOUT:=5}"
 : "${HTTP_FAIL_THRESHOLD:=3}"
@@ -184,7 +186,7 @@ rotate_log_if_needed() {
 init_state() {
   if [[ ! -f "$STATE_FILE" ]]; then
     jq -n '{
-      http: { down: false, fail_count: 0 },
+      http: { down: false, targets: {}, urls: [] },
       host: {
         cpu:  { alert: false, last: 0 },
         ram:  { alert: false, last: 0 },
@@ -341,63 +343,93 @@ detect_web_service() {
 # ============================================================
 # HTTP CHECK
 # ============================================================
-http_check() {
-  [[ "$ENABLE_HTTP_MONITOR" -eq 1 ]] || return 0
-  [[ -n "${URL:-}" ]] || return 0
+build_url_list() {
+  URL_LIST=()
+  if [[ -n "${URLS//[[:space:]]/}" ]]; then
+    local raw
+    raw="${URLS//,/ }"
+    read -ra URL_LIST <<<"$raw"
+  fi
+}
 
+http_check_one() {
+  local url="$1"
   local CODE TIME code_int
   read -r CODE TIME <<<"$(curl -sS -o /dev/null -w "%{http_code} %{time_total}" \
-    --max-time "$HTTP_TIMEOUT" "$URL" || echo "000 0")"
+    --max-time "$HTTP_TIMEOUT" "$url" || echo "000 0")"
 
-  # форматируем время до 1 знака после точки
   if ! printf -v TIME_FMT "%.1f" "${TIME:-0}" 2>/dev/null; then
     TIME_FMT="${TIME:-0}"
   fi
-  
-  # безопасное приведение к десятичному int
+
   code_int=$((10#${CODE:-0}))
 
-  local FAILS DOWN
-  FAILS="$(state_get '.http.fail_count')"; FAILS="${FAILS:-0}"
-  DOWN="$(state_get '.http.down')";       DOWN="${DOWN:-false}"
+  local key path FAILS DOWN
+  key="${url//[^a-zA-Z0-9]/_}"
+  path=".http.targets[\"$key\"]"
+  state_apply "${path} //= { down: false, fail_count: 0, url: \"${url}\" }"
+
+  FAILS="$(state_get "${path}.fail_count")"; FAILS="${FAILS:-0}"
+  DOWN="$(state_get "${path}.down")";       DOWN="${DOWN:-false}"
 
   if (( code_int < HTTP_OK_MIN || code_int > HTTP_OK_MAX )); then
     FAILS=$((FAILS + 1))
-    state_apply ".http.fail_count = ${FAILS}"
+    state_apply "${path}.fail_count = ${FAILS}"
 
     if (( FAILS == 1 )); then
-      log WARN "$(render_msg "$LOG_HTTP_FAIL" CODE "$CODE" FAILS "$FAILS" THRESHOLD "$HTTP_FAIL_THRESHOLD")"
+      log WARN "$(render_msg "$LOG_HTTP_FAIL" CODE "$CODE" FAILS "$FAILS" THRESHOLD "$HTTP_FAIL_THRESHOLD" URL "$url")"
     fi
 
     if (( FAILS >= HTTP_FAIL_THRESHOLD )) && [[ "$DOWN" == "false" ]]; then
-      state_apply ".http.down = true"
-      log ERROR "$(render_msg "$LOG_HTTP_DOWN_CONFIRMED" CODE "$CODE")"
+      state_apply "${path}.down = true"
+      log ERROR "$(render_msg "$LOG_HTTP_DOWN_CONFIRMED" CODE "$CODE" URL "$url")"
       if [[ "$WEB_FOUND" == "true" ]]; then
         if [[ "$WEB_ACTIVE" == "true" ]]; then
-          log WARN "$(render_msg "$LOG_URL_DOWN_SERVICE_UP" WEB "$WEB_NAME")"
-          send_msg "$(render_msg "$MSG_HTTP_DOWN_SERVICE_UP" CODE "$CODE" FAILS "$FAILS" WEB "$WEB_NAME")"
+          log WARN "$(render_msg "$LOG_URL_DOWN_SERVICE_UP" WEB "$WEB_NAME" URL "$url")"
+          send_msg "$(render_msg "$MSG_HTTP_DOWN_SERVICE_UP" CODE "$CODE" FAILS "$FAILS" WEB "$WEB_NAME" URL "$url")"
         else
-          log ERROR "$(render_msg "$LOG_URL_DOWN_SERVICE_DOWN" WEB "$WEB_NAME")"
-          send_msg "$(render_msg "$MSG_HTTP_DOWN_SERVICE_DOWN" CODE "$CODE" FAILS "$FAILS" WEB "$WEB_NAME")"
+          log ERROR "$(render_msg "$LOG_URL_DOWN_SERVICE_DOWN" WEB "$WEB_NAME" URL "$url")"
+          send_msg "$(render_msg "$MSG_HTTP_DOWN_SERVICE_DOWN" CODE "$CODE" FAILS "$FAILS" WEB "$WEB_NAME" URL "$url")"
         fi
       else
-        log WARN "$(render_msg "$LOG_URL_DOWN_NO_SERVICE")"
-        send_msg "$(render_msg "$MSG_HTTP_DOWN_NO_SERVICE" CODE "$CODE" FAILS "$FAILS")"
+        log WARN "$(render_msg "$LOG_URL_DOWN_NO_SERVICE" URL "$url")"
+        send_msg "$(render_msg "$MSG_HTTP_DOWN_NO_SERVICE" CODE "$CODE" FAILS "$FAILS" URL "$url")"
       fi
     fi
     return 0
   fi
 
-  # success (200..399): reset fails; recover if needed
   if (( FAILS != 0 )); then
-    state_apply ".http.fail_count = 0"
+    state_apply "${path}.fail_count = 0"
   fi
 
   if [[ "$DOWN" == "true" ]]; then
-    state_apply ".http.down = false"
-    log INFO "$(render_msg "$LOG_HTTP_RECOVERED" TIME "$TIME_FMT" CODE "$CODE")"
-    send_msg "$(render_msg "$MSG_HTTP_RECOVERED" CODE "$CODE" TIME "$TIME_FMT")"
+    state_apply "${path}.down = false"
+    log INFO "$(render_msg "$LOG_HTTP_RECOVERED" TIME "$TIME_FMT" CODE "$CODE" URL "$url")"
+    send_msg "$(render_msg "$MSG_HTTP_RECOVERED" CODE "$CODE" TIME "$TIME_FMT" URL "$url")"
   fi
+}
+
+http_check() {
+  [[ "$ENABLE_HTTP_MONITOR" -eq 1 ]] || return 0
+  build_url_list
+  (( ${#URL_LIST[@]} > 0 )) || return 0
+
+  local any_down="false"
+  local url key down
+  for url in "${URL_LIST[@]}"; do
+    [[ -n "${url//[[:space:]]/}" ]] || continue
+    http_check_one "$url"
+    key="${url//[^a-zA-Z0-9]/_}"
+    down="$(state_get ".http.targets[\"$key\"].down")"; down="${down:-false}"
+    if [[ "$down" == "true" ]]; then
+      any_down="true"
+    fi
+  done
+
+  local urls_json
+  urls_json="$(printf '%s\n' "${URL_LIST[@]}" | jq -R . | jq -s .)"
+  state_apply ".http.urls = ${urls_json} | .http.down = ${any_down}"
 }
 
 # ============================================================
@@ -496,12 +528,16 @@ prev_web_down="$(state_get '.web.down')"; prev_web_down="${prev_web_down:-false}
 prev_web_name="$(state_get '.web.name')"; prev_web_name="${prev_web_name:-}"
 if [[ "$WEB_FOUND" == "true" ]]; then
   state_apply ".web.name = \"${WEB_NAME}\""
-  if [[ "$WEB_ACTIVE" == "true" ]]; then
+    if [[ "$WEB_ACTIVE" == "true" ]]; then
       if [[ "$prev_web_down" == "true" ]]; then
         state_apply '.web.down = false'
         http_down_now="$(state_get '.http.down')"; http_down_now="${http_down_now:-false}"
         if [[ "$http_down_now" == "true" ]]; then
-          log WARN "$(render_msg "$LOG_SERVICE_RECOVER_HTTP_DOWN" WEB "$WEB_NAME")"
+          urls_for_log="${URLS:-}"
+          if [[ -z "${urls_for_log//[[:space:]]/}" ]]; then
+            urls_for_log="$(state_get '.http.urls | join(" ")')"
+          fi
+          log WARN "$(render_msg "$LOG_SERVICE_RECOVER_HTTP_DOWN" WEB "$WEB_NAME" URLS "$urls_for_log")"
           send_msg "$(render_msg "$MSG_SERVICE_RECOVER_HTTP_DOWN" WEB "$WEB_NAME")"
         fi
       fi
@@ -511,7 +547,11 @@ if [[ "$WEB_FOUND" == "true" ]]; then
     fi
     http_down_now="$(state_get '.http.down')"; http_down_now="${http_down_now:-false}"
     if [[ "$http_down_now" == "true" && "$prev_web_down" == "false" ]]; then
-      log ERROR "$(render_msg "$LOG_HTTP_AND_SERVICE_DOWN" WEB "$WEB_NAME")"
+      urls_for_log="${URLS:-}"
+      if [[ -z "${urls_for_log//[[:space:]]/}" ]]; then
+        urls_for_log="$(state_get '.http.urls | join(" ")')"
+      fi
+      log ERROR "$(render_msg "$LOG_HTTP_AND_SERVICE_DOWN" WEB "$WEB_NAME" URLS "$urls_for_log")"
       send_msg "$(render_msg "$MSG_SERVICE_STOPPED_AFTER_HTTP_DOWN" WEB "$WEB_NAME")"
     fi
   fi
@@ -521,7 +561,7 @@ else
   fi
 fi
 state_apply '.warnings.missing_url_ts //= 0 | .warnings.no_web_service_ts //= 0'
-if [[ "${ENABLE_HTTP_MONITOR:-0}" -eq 1 && -z "${URL:-}" ]]; then
+if [[ "${ENABLE_HTTP_MONITOR:-0}" -eq 1 && -z "${URLS//[[:space:]]/}" ]]; then
   echo "$WARN_URL_MISSING_HTTP_ENABLED" >&2
   last_warn="$(state_get '.warnings.missing_url_ts')"; last_warn="${last_warn:-0}"
   if (( now_ts - last_warn >= 86400 )); then
@@ -529,7 +569,7 @@ if [[ "${ENABLE_HTTP_MONITOR:-0}" -eq 1 && -z "${URL:-}" ]]; then
     state_apply ".warnings.missing_url_ts = ${now_ts}"
   fi
 fi
-if [[ "$WEB_FOUND" == "false" && -z "${URL:-}" ]]; then
+if [[ "$WEB_FOUND" == "false" && -z "${URLS//[[:space:]]/}" ]]; then
   echo "$WARN_URL_AND_NO_WEB" >&2
   last_warn="$(state_get '.warnings.no_web_service_ts')"; last_warn="${last_warn:-0}"
   if (( now_ts - last_warn >= 86400 )); then

@@ -159,7 +159,7 @@ cp .env.example .env
 ```dotenv
 TG_TOKEN="PUT_YOUR_TELEGRAM_BOT_TOKEN_HERE"
 TG_CHAT="PUT_YOUR_CHAT_ID_HERE"
-URL="https://example.com"
+URLS="https://example.com https://example.org/health"
 ```
 
 `.env` можно не создавать — тогда скрипт работает с дефолтами, а Telegram-оповещения будут отключены, если не задать `TG_TOKEN`/`TG_CHAT` через окружение или прямо в скрипте.
@@ -192,7 +192,7 @@ chmod +x monitor.sh
 
 - `TG_TOKEN` — токен Telegram-бота (нужен для оповещений)
 - `TG_CHAT` — chat id, куда отправлять сообщения (нужен для оповещений)
-- `URL` — URL для HTTP-проверки (нужен, если `ENABLE_HTTP_MONITOR=1`)
+- `URLS` — список URL через запятую или пробел (нужен, если `ENABLE_HTTP_MONITOR=1`)
 
 ---
 
@@ -205,7 +205,7 @@ chmod +x monitor.sh
 1. Передать через окружение при запуске:
 
 ```bash
-TG_TOKEN="123:ABC" TG_CHAT="987654321" URL="https://example.com" ./monitor.sh
+TG_TOKEN="123:ABC" TG_CHAT="987654321" URLS="https://example.com https://example.org/health" ./monitor.sh
 ```
 
 2. Прописать переменные прямо в начале `monitor.sh` (для однофайловой поставки).
@@ -228,8 +228,8 @@ ENABLE_DOCKER_MONITOR=0
 # ============================================================
 # HTTP monitor (нужно, если ENABLE_HTTP_MONITOR=1)
 # ============================================================
-# URL для проверки (лучше health endpoint)
-URL="http://example.com/"
+# Несколько URL через запятую или пробел
+URLS="http://example.com/ http://example.org/health"
 
 # Таймаут запроса (сек)
 HTTP_TIMEOUT=5
@@ -275,7 +275,7 @@ CONTAINERS="nginx, mysql, redis"
 
 Включают/выключают блоки проверок:
 
-- `ENABLE_HTTP_MONITOR=1` — проверка доступности `URL` и алертинг падения/восстановления
+- `ENABLE_HTTP_MONITOR=1` — проверка доступности `URLS` и алертинг падения/восстановления
 - `ENABLE_HOST_MONITOR=1` — метрики хоста (CPU/RAM/Disk/Swap) + алертинг превышений/восстановления
 - `ENABLE_DOCKER_MONITOR=1` — мониторинг контейнеров из `CONTAINERS` (опционально)
 
@@ -297,6 +297,7 @@ CONTAINERS="nginx, mysql, redis"
 
 Параметры:
 
+- `URLS` — несколько URL через запятую или пробел.
 - `HTTP_TIMEOUT` — максимальное время ожидания ответа (сек).
 - `HTTP_FAIL_THRESHOLD` — число ошибок подряд, после которого сайт считается недоступным.
   - Это снижает шум от кратковременных сетевых проблем.
@@ -485,7 +486,7 @@ sudo systemctl status server-monitor.timer
 
 ### HTTP
 
-- доступность `URL`;
+- доступность `URLS`;
 - таймаут (`HTTP_TIMEOUT`);
 - подтверждение падения после N ошибок подряд (`HTTP_FAIL_THRESHOLD`);
 - уведомление о падении и восстановлении.
