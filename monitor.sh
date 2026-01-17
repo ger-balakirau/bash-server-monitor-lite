@@ -317,7 +317,7 @@ detect_web_service() {
     for unit in "${KNOWN_WEB_UNITS[@]}"; do
       if [[ "$unit" == *@ ]]; then
         local unit_hits
-        unit_hits="$(systemctl list-unit-files "${unit}.service" --no-legend --no-pager 2>/dev/null | awk 'NF{print $1}')"
+        unit_hits="$(systemctl list-unit-files "${unit}.service" --no-legend --no-pager 2>/dev/null | awk 'NF{print $1}' || true)"
         if [[ -n "$unit_hits" ]]; then
           found_units+=("${unit}.service")
           while read -r inst active_state _; do
@@ -334,7 +334,7 @@ detect_web_service() {
         fi
       else
         local unit_hits
-        unit_hits="$(systemctl list-unit-files "${unit}.service" --no-legend --no-pager 2>/dev/null | awk 'NF{print $1}')"
+        unit_hits="$(systemctl list-unit-files "${unit}.service" --no-legend --no-pager 2>/dev/null | awk 'NF{print $1}' || true)"
         if [[ -n "$unit_hits" ]]; then
           found_units+=("${unit}.service")
           if systemctl is-active --quiet "${unit}.service"; then
