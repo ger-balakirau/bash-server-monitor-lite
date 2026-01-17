@@ -140,3 +140,8 @@ log "Installing packages..."
 $SUDO sh -c "$INSTALL_CMD ${MISSING_PKGS[*]}"
 
 log "Bootstrap completed successfully"
+
+if [[ "${BOOTSTRAP_SELF_DELETE:-0}" == "1" ]]; then
+  log "Self-delete enabled, removing bootstrap script"
+  rm -f "$0" || fatal "Failed to remove $0"
+fi
