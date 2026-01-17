@@ -135,7 +135,7 @@ touch "$LOG_FILE" 2>/dev/null || true
 # ============================================================
 log() {
   local level="$1"; shift
-  printf '%s [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$level" "$*" >>"$LOG_FILE"
+  printf '%s [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$level" "$*" >>"$LOG_FILE" || true
 }
 
 if [[ "$ENV_LOADED" == "0" ]]; then
@@ -214,10 +214,10 @@ state_get() {
 }
 
 state_apply() {
-  local filter="$1"
+  local filter="$1"; shift
   local tmp
   tmp="$(mktemp "$(dirname "$STATE_FILE")/state.tmp.XXXXXX")"
-  jq "$filter" "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
+  jq "$filter" "$STATE_FILE" "$@" >"$tmp" && mv "$tmp" "$STATE_FILE"
 }
 
 send_msg() {
@@ -316,7 +316,9 @@ detect_web_service() {
     )
     for unit in "${KNOWN_WEB_UNITS[@]}"; do
       if [[ "$unit" == *@ ]]; then
-        if systemctl list-unit-files "${unit}.service" --no-legend --no-pager >/dev/null 2>&1; then
+        local unit_hits
+        unit_hits="$(systemctl list-unit-files "${unit}.service" --no-legend --no-pager 2>/dev/null | awk 'NF{print $1}')"
+        if [[ -n "$unit_hits" ]]; then
           found_units+=("${unit}.service")
           while read -r inst active_state _; do
             [[ -n "$inst" ]] || continue
@@ -331,7 +333,9 @@ detect_web_service() {
           fi
         fi
       else
-        if systemctl list-unit-files "${unit}.service" --no-legend --no-pager >/dev/null 2>&1; then
+        local unit_hits
+        unit_hits="$(systemctl list-unit-files "${unit}.service" --no-legend --no-pager 2>/dev/null | awk 'NF{print $1}')"
+        if [[ -n "$unit_hits" ]]; then
           found_units+=("${unit}.service")
           if systemctl is-active --quiet "${unit}.service"; then
             active_units+=("${unit}.service")
@@ -422,22 +426,22 @@ http_check_one() {
   local key path FAILS DOWN
   key="${url//[^a-zA-Z0-9]/_}"
   path=".http.targets[\"$key\"]"
-  state_apply "${path} //= { down: false, fail_count: 0, alert_service_down: false, url: \"${url}\" }"
+  state_apply "${path} //= { down: false, fail_count: 0, alert_service_down: false, url: \$url }" --arg url "$url"
 
   FAILS="$(state_get "${path}.fail_count")"; FAILS="${FAILS:-0}"
   DOWN="$(state_get "${path}.down")";       DOWN="${DOWN:-false}"
 
   if (( code_int < HTTP_OK_MIN || code_int > HTTP_OK_MAX )); then
     FAILS=$((FAILS + 1))
-    state_apply "${path}.fail_count = ${FAILS}"
-    state_apply "${path}.alert_service_down = false"
+    state_apply "${path}.fail_count = \$fails | ${path}.alert_service_down = \$flag" \
+      --argjson fails "$FAILS" --argjson flag false
 
     if (( FAILS == 1 )); then
       log WARN "$(render_msg "$LOG_HTTP_FAIL" CODE "$CODE" FAILS "$FAILS" THRESHOLD "$HTTP_FAIL_THRESHOLD" URL "$url")"
     fi
 
     if (( FAILS >= HTTP_FAIL_THRESHOLD )) && [[ "$DOWN" == "false" ]]; then
-      state_apply "${path}.down = true"
+      state_apply "${path}.down = \$flag" --argjson flag true
       log ERROR "$(render_msg "$LOG_HTTP_DOWN_CONFIRMED" CODE "$CODE" URL "$url")"
       if [[ "$WEB_FOUND" == "true" ]]; then
         if [[ "$WEB_ACTIVE" == "true" ]]; then
@@ -455,12 +459,12 @@ http_check_one() {
     return 0
   fi
 
-  if (( FAILS != 0 )); then
-    state_apply "${path}.fail_count = 0"
+  if (( FAILS != 0 )) || [[ "$DOWN" == "true" ]]; then
+    state_apply "${path}.fail_count = \$fails | ${path}.down = \$flag" \
+      --argjson fails 0 --argjson flag false
   fi
 
   if [[ "$DOWN" == "true" ]]; then
-    state_apply "${path}.down = false"
     log INFO "$(render_msg "$LOG_HTTP_RECOVERED" TIME "$TIME_FMT" CODE "$CODE" URL "$url")"
     send_msg "$(render_msg "$MSG_HTTP_RECOVERED" CODE "$CODE" TIME "$TIME_FMT" URL "$url")"
   fi
@@ -471,7 +475,7 @@ http_check_one() {
     if [[ "$alert_service_down" == "false" ]]; then
       log WARN "$(render_msg "$LOG_HTTP_UP_SERVICE_DOWN" URL "$url" WEB_INACTIVE "$WEB_INACTIVE_LIST")"
       send_msg "$(render_msg "$MSG_HTTP_UP_SERVICE_DOWN" URL "$url" WEB_INACTIVE "$WEB_INACTIVE_LIST")"
-      state_apply "${path}.alert_service_down = true"
+      state_apply "${path}.alert_service_down = \$flag" --argjson flag true
     fi
   else
     local alert_service_down
@@ -480,7 +484,7 @@ http_check_one() {
       log INFO "$(render_msg "$LOG_HTTP_UP_SERVICE_RECOVER" URL "$url" WEB_ACTIVE "$WEB_ACTIVE_LIST")"
       send_msg "$(render_msg "$MSG_HTTP_UP_SERVICE_RECOVER" URL "$url" WEB_ACTIVE "$WEB_ACTIVE_LIST")"
     fi
-    state_apply "${path}.alert_service_down = false"
+    state_apply "${path}.alert_service_down = \$flag" --argjson flag false
   fi
 }
 
@@ -488,7 +492,7 @@ http_check() {
   [[ "$ENABLE_HTTP_MONITOR" -eq 1 ]] || return 0
   build_url_list
   if (( ${#URL_LIST[@]} == 0 )); then
-    state_apply '.http.fail_count = 0 | .http.down = false | .http.targets = {} | .http.urls = []'
+    state_apply '.http.down = false | .http.targets = {} | .http.urls = []'
     return 0
   fi
 
@@ -507,7 +511,8 @@ http_check() {
   local urls_json keys_json
   urls_json="$(printf '%s\n' "${URL_LIST[@]}" | jq -R . | jq -s .)"
   keys_json="$(printf '%s\n' "${URL_LIST[@]}" | jq -R 'gsub("[^a-zA-Z0-9]"; "_")' | jq -s .)"
-  state_apply ".http.urls = ${urls_json} | .http.down = ${any_down} | .http.targets |= with_entries(select(.key as \$k | ${keys_json} | index(\$k)))"
+  state_apply ".http.urls = \$urls | .http.down = \$down | .http.targets |= with_entries(select(.key as \$k | \$keys | index(\$k)))" \
+    --argjson urls "$urls_json" --argjson down "$any_down" --argjson keys "$keys_json"
 }
 
 # ============================================================
@@ -520,11 +525,13 @@ check_metric() {
   alert="${alert:-false}"
 
   if (( value >= warn )) && [[ "$alert" == "false" ]]; then
-    state_apply "${path}.alert = true | ${path}.last = ${value}"
+    state_apply "${path}.alert = \$alert | ${path}.last = \$val" \
+      --argjson alert true --argjson val "$value"
     log WARN "$(render_msg "$LOG_METRIC_ALERT" NAME "$name" VALUE "$value")"
     send_msg "$(render_msg "$MSG_METRIC_ALERT" NAME "$name" VALUE "$value" WARN "$warn")"
   elif (( value <= recover )) && [[ "$alert" == "true" ]]; then
-    state_apply "${path}.alert = false | ${path}.last = ${value}"
+    state_apply "${path}.alert = \$alert | ${path}.last = \$val" \
+      --argjson alert false --argjson val "$value"
     log INFO "$(render_msg "$LOG_METRIC_RECOVERED" NAME "$name" VALUE "$value")"
     send_msg "$(render_msg "$MSG_METRIC_RECOVERED" NAME "$name" VALUE "$value")"
   fi
@@ -562,17 +569,17 @@ container_check() {
     [[ -n "$ct" ]] || continue
 
     key="${ct//[^a-zA-Z0-9]/_}"
-    state_apply ".containers[\"$key\"] //= { down: false }"
+    state_apply ".containers[\$key] //= { down: false }" --arg key "$key"
 
     DOWN="$(state_get ".containers[\"$key\"].down")"; DOWN="${DOWN:-false}"
     RUNNING="$(docker inspect -f '{{.State.Running}}' "$ct" 2>/dev/null || echo false)"
 
     if [[ "$RUNNING" != "true" && "$DOWN" == "false" ]]; then
-      state_apply ".containers[\"$key\"].down = true"
+      state_apply ".containers[\$key].down = \$flag" --arg key "$key" --argjson flag true
       log WARN "$(render_msg "$LOG_CONTAINER_STOPPED" CT "$ct")"
       send_msg "$(render_msg "$MSG_CONTAINER_DOWN" CT "$ct")"
     elif [[ "$RUNNING" == "true" && "$DOWN" == "true" ]]; then
-      state_apply ".containers[\"$key\"].down = false"
+      state_apply ".containers[\$key].down = \$flag" --arg key "$key" --argjson flag false
       log INFO "$(render_msg "$LOG_CONTAINER_STARTED" CT "$ct")"
       send_msg "$(render_msg "$MSG_CONTAINER_UP" CT "$ct")"
     fi
@@ -597,7 +604,7 @@ if [[ -z "${TG_TOKEN:-}" || -z "${TG_CHAT:-}" ]]; then
   last_warn="${last_warn:-0}"
   if (( now_ts - last_warn >= 86400 )); then
     log WARN "$(render_msg "$LOG_TG_NOT_CONFIGURED")"
-    state_apply ".telegram.warn_missing_ts = ${now_ts}"
+    state_apply ".telegram.warn_missing_ts = \$ts" --argjson ts "$now_ts"
   fi
 fi
 detect_web_service
@@ -615,17 +622,17 @@ if (( ${#WEB_INACTIVE_UNITS[@]} > 0 )); then
   inactive_json="$(printf '%s\n' "${WEB_INACTIVE_UNITS[@]}" | jq -R . | jq -s .)"
 fi
 if [[ "$WEB_FOUND" == "true" ]]; then
-  state_apply ".web.services.active = ${active_json} | .web.services.inactive = ${inactive_json}"
+  state_apply ".web.services.active = \$active | .web.services.inactive = \$inactive | .web.name = \$name" \
+    --argjson active "$active_json" --argjson inactive "$inactive_json" --arg name "$WEB_NAME"
   if [[ -n "${WEB_ACTIVE_LIST//[[:space:]]/}" && "$WEB_ACTIVE_LIST" != "$prev_web_active" ]]; then
     log INFO "$(render_msg "$LOG_WEB_ACTIVE" WEB_ACTIVE "$WEB_ACTIVE_LIST")"
   fi
   if [[ -n "${WEB_INACTIVE_LIST//[[:space:]]/}" && "$WEB_INACTIVE_LIST" != "$prev_web_inactive" ]]; then
     log WARN "$(render_msg "$LOG_WEB_INACTIVE" WEB_INACTIVE "$WEB_INACTIVE_LIST")"
   fi
-  state_apply ".web.name = \"${WEB_NAME}\""
     if [[ "$WEB_ACTIVE" == "true" ]]; then
       if [[ "$prev_web_down" == "true" ]]; then
-        state_apply '.web.down = false'
+        state_apply ".web.down = \$flag" --argjson flag false
         http_down_now="$(state_get '.http.down')"; http_down_now="${http_down_now:-false}"
         if [[ "$http_down_now" == "true" ]]; then
           urls_for_log="${URLS:-}"
@@ -638,7 +645,7 @@ if [[ "$WEB_FOUND" == "true" ]]; then
       fi
     else
     if [[ "$prev_web_down" == "false" ]]; then
-      state_apply '.web.down = true'
+      state_apply ".web.down = \$flag" --argjson flag true
     fi
     http_down_now="$(state_get '.http.down')"; http_down_now="${http_down_now:-false}"
     if [[ "$http_down_now" == "true" && "$prev_web_down" == "false" ]]; then
@@ -651,9 +658,9 @@ if [[ "$WEB_FOUND" == "true" ]]; then
     fi
   fi
 else
-  state_apply '.web.services.active = [] | .web.services.inactive = []'
   if [[ "$prev_web_down" == "true" || -n "$prev_web_name" ]]; then
-    state_apply '.web.down = false | .web.name = ""'
+    state_apply ".web.down = \$flag | .web.name = \$name | .web.services.active = [] | .web.services.inactive = []" \
+      --argjson flag false --arg name ""
   fi
 fi
 state_apply '.warnings.missing_url_ts //= 0 | .warnings.no_web_service_ts //= 0'
@@ -662,7 +669,7 @@ if [[ "${ENABLE_HTTP_MONITOR:-0}" -eq 1 && -z "${URLS//[[:space:]]/}" ]]; then
   last_warn="$(state_get '.warnings.missing_url_ts')"; last_warn="${last_warn:-0}"
   if (( now_ts - last_warn >= 86400 )); then
     log WARN "$(render_msg "$WARN_URL_MISSING_HTTP_ENABLED")"
-    state_apply ".warnings.missing_url_ts = ${now_ts}"
+    state_apply ".warnings.missing_url_ts = \$ts" --argjson ts "$now_ts"
   fi
 fi
 if [[ "$WEB_FOUND" == "false" && -z "${URLS//[[:space:]]/}" ]]; then
@@ -670,7 +677,7 @@ if [[ "$WEB_FOUND" == "false" && -z "${URLS//[[:space:]]/}" ]]; then
   last_warn="$(state_get '.warnings.no_web_service_ts')"; last_warn="${last_warn:-0}"
   if (( now_ts - last_warn >= 86400 )); then
     log WARN "$(render_msg "$WARN_URL_AND_NO_WEB")"
-    state_apply ".warnings.no_web_service_ts = ${now_ts}"
+    state_apply ".warnings.no_web_service_ts = \$ts" --argjson ts "$now_ts"
   fi
 fi
 http_check
