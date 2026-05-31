@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+case "${1:-}" in
+  list-unit-files|list-units)
+    exit 0
+    ;;
+  is-active)
+    exit 3
+    ;;
+  status)
+    exit 3
+    ;;
+  *)
+    exit 1
+    ;;
+esac
